@@ -1,16 +1,14 @@
-// Минимальный вебхук для Telegram Game
-// Обрабатывает: /start, /play -> sendGame
-// И callback_query на кнопку "Играть" -> открывает твою игру по URL
-
+// api/telegram.js — вебхук Telegram + выдача URL игры
 const TG = {
   token: process.env.BOT_TOKEN,
   api: `https://api.telegram.org/bot${process.env.BOT_TOKEN}`
 };
 
-// ОБЯЗАТЕЛЬНО задай в переменных окружения:
-// BOT_TOKEN        — токен бота от BotFather
+// ОБЯЗАТЕЛЬНО заданы переменные окружения:
+// BOT_TOKEN        — токен бота
 // GAME_SHORT_NAME  — ladderslava
-// GAME_URL_BASE    — твой https-домен игры на Vercel, например: https://yourgame.vercel.app
+// GAME_URL_BASE    — https-домен игры (без слеша в конце), напр. https://ladders-lava.vercel.app
+// BOT_BASE         — https-домен ЭТОГО проекта (без слеша), напр. https://ladderslava-bot-xxxx.vercel.app
 
 async function tg(method, payload) {
   const res = await fetch(`${TG.api}/${method}`, {
@@ -19,16 +17,16 @@ async function tg(method, payload) {
     body: JSON.stringify(payload)
   });
   const data = await res.json();
-  if (!data.ok) {
-    console.error('TG API error:', method, data);
-  }
+  if (!data.ok) console.error('TG API error:', method, data);
   return data;
 }
 
 function gameUrl(params = {}) {
-  const base = process.env.GAME_URL_BASE; // например: https://ladderslava.vercel.app
+  const base = process.env.GAME_URL_BASE; // домен игры
+  const apiBase = process.env.BOT_BASE;   // домен бота (для отправки очков)
   const q = new URLSearchParams({
     v: String(Date.now()),
+    api: apiBase || '',
     ...params
   });
   return `${base}/index.html?${q.toString()}`;
@@ -43,7 +41,7 @@ export default async function handler(req, res) {
   try {
     const update = req.body;
 
-    // 1) Команды /start и /play -> отправляем игру
+    // /start и /play -> отправляем игру
     if (update.message && update.message.text) {
       const chatId = update.message.chat.id;
       const text = update.message.text.trim();
@@ -57,15 +55,13 @@ export default async function handler(req, res) {
       }
     }
 
-    // 2) Нажатие кнопки "Играть" из карточки игры
+    // Нажатие "Играть" под карточкой игры
     if (update.callback_query && update.callback_query.game_short_name) {
       const cq = update.callback_query;
       const userId = cq.from.id;
       const chatId = cq.message?.chat?.id;
       const messageId = cq.message?.message_id;
 
-      // Возвращаем ссылку на твою игру.
-      // Добавляем параметры (юзер/чат/сообщение) — они пригодятся дальше для лидеров.
       const url = gameUrl({
         uid: String(userId),
         chat: chatId ? String(chatId) : '',
@@ -74,15 +70,13 @@ export default async function handler(req, res) {
 
       await tg('answerCallbackQuery', {
         callback_query_id: cq.id,
-        url // Telegram откроет этот URL внутри WebView
+        url
       });
 
       return res.status(200).json({ ok: true });
     }
 
-    // Прочие апдейты игнорируем
     return res.status(200).json({ ok: true });
-
   } catch (e) {
     console.error('Webhook error:', e);
     return res.status(200).json({ ok: true });
