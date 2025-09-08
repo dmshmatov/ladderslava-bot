@@ -1,4 +1,5 @@
-// api/telegram.js — вебхук Telegram + выдача URL игры
+// api/telegram.js — Telegram webhook (лички и группы) + выдача URL игры
+
 const TG = {
   token: process.env.BOT_TOKEN,
   api: `https://api.telegram.org/bot${process.env.BOT_TOKEN}`
@@ -8,7 +9,7 @@ const TG = {
 // BOT_TOKEN        — токен бота
 // GAME_SHORT_NAME  — ladderslava
 // GAME_URL_BASE    — https-домен игры (без слеша в конце), напр. https://ladders-lava.vercel.app
-// BOT_BASE         — https-домен ЭТОГО проекта (без слеша), напр. https://ladderslava-bot-xxxx.vercel.app
+// BOT_BASE         — https-домен ЭТОГО проекта (без слеша), напр. https://ladderslava-bot.vercel.app
 
 async function tg(method, payload) {
   const res = await fetch(`${TG.api}/${method}`, {
@@ -29,7 +30,14 @@ function gameUrl(params = {}) {
     api: apiBase || '',
     ...params
   });
+  // твой фронт слушает index.html
   return `${base}/index.html?${q.toString()}`;
+}
+
+// --- helper: корректно парсим /play и /play@ladderslava_bot ---
+function getCommand(text) {
+  const m = String(text || '').trim().match(/^\/([a-zA-Z0-9_]+)(?:@[\w_]+)?(?:\s+.*)?$/);
+  return m ? m[1].toLowerCase() : null;
 }
 
 export default async function handler(req, res) {
@@ -39,23 +47,27 @@ export default async function handler(req, res) {
   }
 
   try {
-    const update = req.body;
+    const update = req.body || {};
 
-    // /start и /play -> отправляем игру
-    if (update.message && update.message.text) {
+    // 1) /start и /play из ЛЮБОГО чата (private/group/supergroup)
+    if (update.message && typeof update.message.text === 'string') {
       const chatId = update.message.chat.id;
-      const text = update.message.text.trim();
+      const cmd = getCommand(update.message.text);
 
-      if (text === '/start' || text === '/play') {
+      if (cmd === 'start' || cmd === 'play') {
+        // отправляем карточку игры с кнопкой "Play" (так стабильнее в группах)
         await tg('sendGame', {
           chat_id: chatId,
-          game_short_name: process.env.GAME_SHORT_NAME
+          game_short_name: process.env.GAME_SHORT_NAME,
+          reply_markup: {
+            inline_keyboard: [[{ text: 'Play ladderslava', callback_game: {} }]]
+          }
         });
         return res.status(200).json({ ok: true });
       }
     }
 
-    // Нажатие "Играть" под карточкой игры
+    // 2) Нажатие кнопки "Play ladderslava" под карточкой игры
     if (update.callback_query && update.callback_query.game_short_name) {
       const cq = update.callback_query;
       const userId = cq.from.id;
