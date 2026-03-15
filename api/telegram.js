@@ -1,4 +1,4 @@
-// api/telegram.js — Telegram webhook (лички и группы) + выдача URL игры + рейтинг из Supabase
+// api/telegram.js — Telegram webhook + карточка игры + рейтинг из Supabase
 
 const TG = {
   token: process.env.BOT_TOKEN,
@@ -11,11 +11,11 @@ const SUPABASE = {
 };
 
 // ОБЯЗАТЕЛЬНО заданы переменные окружения:
-// BOT_TOKEN        — токен бота
-// GAME_SHORT_NAME  — ladderslava
-// GAME_URL_BASE    — https-домен игры (без слеша в конце), напр. https://ladders-lava.vercel.app
-// BOT_BASE         — https-домен ЭТОГО проекта (без слеша), напр. https://ladderslava-bot.vercel.app
-// SUPABASE_URL     — https://...supabase.co
+// BOT_TOKEN         — токен бота
+// GAME_SHORT_NAME   — ladderslava
+// GAME_URL_BASE     — https-домен игры (без слеша в конце)
+// BOT_BASE          — https-домен ЭТОГО проекта (без слеша)
+// SUPABASE_URL      — https://...supabase.co
 // SUPABASE_ANON_KEY — sb_publishable_...
 
 async function tg(method, payload) {
@@ -30,8 +30,8 @@ async function tg(method, payload) {
 }
 
 function gameUrl(params = {}) {
-  const base = process.env.GAME_URL_BASE; // домен игры
-  const apiBase = process.env.BOT_BASE;   // домен бота (для отправки очков)
+  const base = process.env.GAME_URL_BASE;
+  const apiBase = process.env.BOT_BASE;
   const q = new URLSearchParams({
     v: String(Date.now()),
     api: apiBase || '',
@@ -40,7 +40,6 @@ function gameUrl(params = {}) {
   return `${base}/index.html?${q.toString()}`;
 }
 
-// --- helper: корректно парсим /play и /play@ladderslava_bot ---
 function getCommand(text) {
   const m = String(text || '').trim().match(/^\/([a-zA-Z0-9_]+)(?:@[\w_]+)?(?:\s+.*)?$/);
   return m ? m[1].toLowerCase() : null;
@@ -52,34 +51,27 @@ function formatPlayerName(row) {
   return `Player ${row.telegram_user_id}`;
 }
 
-async function fetchLeaderboard(limit = 10) {
-  if (!SUPABASE.url || !SUPABASE.key) {
-    throw new Error('SUPABASE_URL or SUPABASE_ANON_KEY is missing');
-  }
-
-  const url =
-    `${SUPABASE.url}/rest/v1/leaderboard` +
-    `?select=telegram_user_id,username,first_name,best_score,last_score,games_played,updated_at` +
-    `&order=best_score.desc` +
-    `&order=updated_at.asc` +
-    `&limit=${limit}`;
-
-  const res = await fetch(url, {
-    headers: {
-      apikey: SUPABASE.key,
-      Authorization: `Bearer ${SUPABASE.key}`
-    }
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Supabase leaderboard error ${res.status}: ${text}`);
-  }
-
-  return await res.json();
+function medalPrefix(index) {
+  if (index === 0) return '🥇';
+  if (index === 1) return '🥈';
+  if (index === 2) return '🥉';
+  return `${index + 1}.`;
 }
 
-async function fetchUserRank(userId) {
+function helsinkiDayKey(value) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Helsinki',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date(value));
+}
+
+function todayHelsinkiKey() {
+  return helsinkiDayKey(new Date());
+}
+
+async function fetchAllLeaderboardRows() {
   if (!SUPABASE.url || !SUPABASE.key) {
     throw new Error('SUPABASE_URL or SUPABASE_ANON_KEY is missing');
   }
@@ -99,14 +91,42 @@ async function fetchUserRank(userId) {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Supabase rank error ${res.status}: ${text}`);
+    throw new Error(`Supabase leaderboard error ${res.status}: ${text}`);
   }
 
-  const rows = await res.json();
+  return await res.json();
+}
+
+function buildTodayRows(rows) {
+  const todayKey = todayHelsinkiKey();
+  return rows
+    .filter(row => row.updated_at && helsinkiDayKey(row.updated_at) === todayKey)
+    .sort((a, b) => {
+      if ((b.last_score || 0) !== (a.last_score || 0)) {
+        return (b.last_score || 0) - (a.last_score || 0);
+      }
+      return new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime();
+    });
+}
+
+function formatLeaderboardSection(title, rows, scoreField, emptyText) {
+  let text = `${title}\n`;
+  if (!rows.length) {
+    text += `${emptyText}`;
+    return text;
+  }
+
+  text += rows
+    .slice(0, 10)
+    .map((row, i) => `${medalPrefix(i)} ${formatPlayerName(row)} — ${row[scoreField] || 0}`)
+    .join('\n');
+
+  return text;
+}
+
+function getRankInfo(rows, userId) {
   const index = rows.findIndex(r => Number(r.telegram_user_id) === Number(userId));
-
   if (index === -1) return null;
-
   return {
     rank: index + 1,
     row: rows[index]
@@ -114,27 +134,38 @@ async function fetchUserRank(userId) {
 }
 
 async function buildLeaderboardText(userId) {
-  const top = await fetchLeaderboard(10);
-  const me = await fetchUserRank(userId);
+  const allRows = await fetchAllLeaderboardRows();
+  const todayRows = buildTodayRows(allRows);
 
-  let text = `🏆 Топ игроков Ladders & Lava\n\n`;
+  const allTimeTop = [...allRows].sort((a, b) => {
+    if ((b.best_score || 0) !== (a.best_score || 0)) {
+      return (b.best_score || 0) - (a.best_score || 0);
+    }
+    return new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime();
+  });
 
-  if (!top.length) {
-    text += `Пока что таблица пустая.`;
-    return text;
-  }
+  const allTimeRank = getRankInfo(allTimeTop, userId);
+  const todayRank = getRankInfo(todayRows, userId);
 
-  text += top
-    .map((row, i) => `${i + 1}. ${formatPlayerName(row)} — ${row.best_score}`)
-    .join('\n');
+  let text = `🏆 Рейтинг Ladders & Lava\n\n`;
+  text += formatLeaderboardSection('🌍 За всё время', allTimeTop, 'best_score', 'Пока что таблица пуста.');
+  text += `\n\n`;
+  text += formatLeaderboardSection('📅 За сегодня', todayRows, 'last_score', 'Сегодня ещё никто не играл.');
 
-  if (me) {
-    text += `\n\nВаш лучший результат: ${me.row.best_score}`;
-    text += `\nВаше место: #${me.rank}`;
-    text += `\nСыграно игр: ${me.row.games_played}`;
+  if (allTimeRank) {
+    text += `\n\nВаш лучший результат: ${allTimeRank.row.best_score}`;
+    text += `\nВаше место за всё время: #${allTimeRank.rank}`;
+    text += `\nСыграно игр: ${allTimeRank.row.games_played}`;
   } else {
-    text += `\n\nВы пока ещё не попали в таблицу. Сыграйте одну игру.`;
+    text += `\n\nВы пока ещё не попали в общий рейтинг. Сыграйте одну игру.`;
   }
+
+  if (todayRank) {
+    text += `\nВаше место за сегодня: #${todayRank.rank}`;
+    text += `\nВаш результат за сегодня: ${todayRank.row.last_score}`;
+  }
+
+  text += `\n\nℹ️ Раздел "За сегодня" сейчас считается по последнему результату игрока за текущий день.`;
 
   return text;
 }
@@ -161,7 +192,6 @@ export default async function handler(req, res) {
   try {
     const update = req.body || {};
 
-    // 1) /start, /play, /rating, текстовые кнопки
     if (update.message && typeof update.message.text === 'string') {
       const chatId = update.message.chat.id;
       const fromId = update.message.from?.id;
@@ -183,7 +213,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 2) Нажатие кнопки "Play ladderslava" под карточкой игры
     if (update.callback_query && update.callback_query.game_short_name) {
       const cq = update.callback_query;
       const userId = cq.from.id;
@@ -193,7 +222,9 @@ export default async function handler(req, res) {
       const url = gameUrl({
         uid: String(userId),
         chat: chatId ? String(chatId) : '',
-        msg: messageId ? String(messageId) : ''
+        msg: messageId ? String(messageId) : '',
+        uname: cq.from?.username ? String(cq.from.username) : '',
+        fname: cq.from?.first_name ? String(cq.from.first_name) : ''
       });
 
       await tg('answerCallbackQuery', {
@@ -204,7 +235,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    // 3) Нажатие inline-кнопки "🏆 Рейтинг"
     if (update.callback_query && update.callback_query.data === 'show_rating') {
       const cq = update.callback_query;
       const chatId = cq.message?.chat?.id;
