@@ -1,9 +1,10 @@
 // api/telegram.js — Telegram webhook + карточка игры + рейтинг из Supabase
 // Версия:
+// - перед игрой отправляется приветственное сообщение
 // - рейтинг открывается отдельным сообщением
 // - рейтинг обновляется одной кнопкой
 // - в рейтинге есть "Закрыть"
-// - у game message сразу очищается верхний встроенный текст (Top Players / score block)
+// - у game message сразу очищается верхний встроенный текст Telegram
 
 const TG = {
   token: process.env.BOT_TOKEN,
@@ -15,7 +16,7 @@ const SUPABASE = {
   key: process.env.SUPABASE_ANON_KEY
 };
 
-const INVISIBLE_TEXT = '\u2063'; // невидимый символ для очистки текста game message
+const INVISIBLE_TEXT = '\u2063';
 
 // ОБЯЗАТЕЛЬНО заданы переменные окружения:
 // BOT_TOKEN         — токен бота
@@ -33,9 +34,11 @@ async function tg(method, payload) {
   });
 
   const data = await res.json();
+
   if (!data.ok) {
     console.error('TG API error:', method, data);
   }
+
   return data;
 }
 
@@ -60,13 +63,32 @@ function getCommand(text) {
   return m ? m[1].toLowerCase() : null;
 }
 
+function buildWelcomeText() {
+  return (
+    `🔥 Ladders & Lava\n\n` +
+    `Перепрыгивай между лестницами и избегай камней.\n\n` +
+    `🎯 Цель:\n` +
+    `набрать как можно больше очков\n\n` +
+    `⚡ Особенность:\n` +
+    `в бесконечном режиме появляются случайные биомы\n` +
+    `и +15 монет за каждые 100 очков\n\n` +
+    `👇 Как пользоваться:\n` +
+    `🎮 Играть — запускает игру\n` +
+    `🏆 Рейтинг — показывает топ игроков\n\n` +
+    `🏆 Попробуй попасть в топ-3\n\n` +
+    `Готов? Поехали 👇`
+  );
+}
+
 function formatPlayerName(row) {
   if (row.username && String(row.username).trim()) {
     return '@' + String(row.username).trim();
   }
+
   if (row.first_name && String(row.first_name).trim()) {
     return String(row.first_name).trim();
   }
+
   return `Player ${row.telegram_user_id}`;
 }
 
@@ -125,6 +147,7 @@ function buildTodayRows(rows) {
       if ((b.last_score || 0) !== (a.last_score || 0)) {
         return (b.last_score || 0) - (a.last_score || 0);
       }
+
       return new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime();
     });
 }
@@ -147,6 +170,7 @@ function formatLeaderboardSection(title, rows, scoreField, emptyText) {
 
 function getRankInfo(rows, userId) {
   const index = rows.findIndex(r => Number(r.telegram_user_id) === Number(userId));
+
   if (index === -1) return null;
 
   return {
@@ -163,6 +187,7 @@ async function buildLeaderboardText(userId) {
     if ((b.best_score || 0) !== (a.best_score || 0)) {
       return (b.best_score || 0) - (a.best_score || 0);
     }
+
     return new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime();
   });
 
@@ -210,15 +235,20 @@ function buildRatingKeyboard() {
   };
 }
 
+async function sendWelcomeMessage(chatId) {
+  return await tg('sendMessage', {
+    chat_id: chatId,
+    text: buildWelcomeText()
+  });
+}
+
 async function clearGameMessageText(chatId, messageId) {
-  const result = await tg('editMessageText', {
+  return await tg('editMessageText', {
     chat_id: chatId,
     message_id: messageId,
     text: INVISIBLE_TEXT,
     reply_markup: buildMainKeyboard()
   });
-
-  return result;
 }
 
 async function sendMainGameCard(chatId) {
@@ -228,8 +258,6 @@ async function sendMainGameCard(chatId) {
     reply_markup: buildMainKeyboard()
   });
 
-  // Сразу очищаем верхний текст game message,
-  // чтобы не показывался встроенный Top Players / score block
   if (sent?.ok && sent?.result?.message_id) {
     await clearGameMessageText(chatId, sent.result.message_id);
   }
@@ -282,6 +310,7 @@ export default async function handler(req, res) {
       const cmd = getCommand(text);
 
       if (cmd === 'start' || cmd === 'play' || text === '🎮 Играть') {
+        await sendWelcomeMessage(chatId);
         await sendMainGameCard(chatId);
         return res.status(200).json({ ok: true });
       }
