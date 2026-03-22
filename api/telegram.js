@@ -5,6 +5,7 @@
 // - рейтинг открывается отдельным сообщением
 // - рейтинг обновляется одной кнопкой
 // - в рейтинге есть "Закрыть"
+// - добавлена owner-only команда /broadcast для рассылки игрокам
 
 const TG = {
   token: process.env.BOT_TOKEN,
@@ -23,6 +24,7 @@ const SUPABASE = {
 // BOT_BASE          — https-домен ЭТОГО проекта (без слеша)
 // SUPABASE_URL      — https://...supabase.co
 // SUPABASE_ANON_KEY — sb_publishable_...
+// OWNER_ID          — Telegram ID владельца бота
 
 async function tg(method, payload) {
   const res = await fetch(`${TG.api}/${method}`, {
@@ -133,6 +135,72 @@ async function fetchAllLeaderboardRows() {
   }
 
   return await res.json();
+}
+
+async function fetchAllBroadcastUsers() {
+  if (!SUPABASE.url || !SUPABASE.key) {
+    throw new Error('SUPABASE_URL or SUPABASE_ANON_KEY is missing');
+  }
+
+  const url =
+    `${SUPABASE.url}/rest/v1/leaderboard` +
+    `?select=telegram_user_id` +
+    `&order=updated_at.desc`;
+
+  const res = await fetch(url, {
+    headers: {
+      apikey: SUPABASE.key,
+      Authorization: `Bearer ${SUPABASE.key}`
+    }
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Supabase broadcast users error ${res.status}: ${text}`);
+  }
+
+  const rows = await res.json();
+  const ids = new Set();
+
+  for (const row of rows) {
+    const id = Number(row.telegram_user_id);
+    if (id) ids.add(id);
+  }
+
+  return Array.from(ids);
+}
+
+async function runBroadcast(text) {
+  const userIds = await fetchAllBroadcastUsers();
+
+  let success = 0;
+  let failed = 0;
+
+  for (const chatId of userIds) {
+    try {
+      const result = await tg('sendMessage', {
+        chat_id: chatId,
+        text,
+        disable_web_page_preview: true
+      });
+
+      if (result.ok) {
+        success += 1;
+      } else {
+        failed += 1;
+      }
+    } catch (e) {
+      failed += 1;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 60));
+  }
+
+  return {
+    total: userIds.length,
+    success,
+    failed
+  };
 }
 
 function buildTodayRows(rows) {
@@ -298,6 +366,44 @@ export default async function handler(req, res) {
       const fromId = update.message.from?.id;
       const text = String(update.message.text || '');
       const cmd = getCommand(text);
+
+      if (cmd === 'broadcast') {
+        if (String(fromId) !== String(process.env.OWNER_ID)) {
+          await tg('sendMessage', {
+            chat_id: chatId,
+            text: 'Нет доступа'
+          });
+          return res.status(200).json({ ok: true });
+        }
+
+        const textToSend = text.replace(/^\/broadcast(?:@[\w_]+)?\s*/i, '').trim();
+
+        if (!textToSend) {
+          await tg('sendMessage', {
+            chat_id: chatId,
+            text: 'После команды /broadcast нужно написать текст сообщения.'
+          });
+          return res.status(200).json({ ok: true });
+        }
+
+        await tg('sendMessage', {
+          chat_id: chatId,
+          text: '🚀 Рассылка запущена...'
+        });
+
+        const result = await runBroadcast(textToSend);
+
+        await tg('sendMessage', {
+          chat_id: chatId,
+          text:
+            `✅ Рассылка завершена\n\n` +
+            `Всего пользователей: ${result.total}\n` +
+            `Успешно: ${result.success}\n` +
+            `Не удалось: ${result.failed}`
+        });
+
+        return res.status(200).json({ ok: true });
+      }
 
       if (cmd === 'start' || cmd === 'play' || text === '🎮 Играть') {
         await sendMainGameCard(chatId);
