@@ -55,11 +55,12 @@ function gameUrl(params = {}) {
   return `${base}/index.html?${q.toString()}`;
 }
 
+// ОБНОВЛЕНО:
+// берём только первое слово сообщения, поэтому /broadcast нормально работает
+// даже если ниже много строк текста
 function getCommand(text) {
-  const m = String(text || '')
-    .trim()
-    .match(/^\/([a-zA-Z0-9_]+)(?:@[\w_]+)?(?:\s+.*)?$/);
-
+  const firstToken = String(text || '').trim().split(/\s+/)[0] || '';
+  const m = firstToken.match(/^\/([a-zA-Z0-9_]+)(?:@[\w_]+)?$/);
   return m ? m[1].toLowerCase() : null;
 }
 
