@@ -1,4 +1,4 @@
-// api/telegram.js — Telegram webhook + карточка игры + рейтинг из Supabase
+// api/telegram.js — Telegram webhook + карточка игры + рейтинг из Supabase + обновление сообщения рейтинга
 
 const TG = {
   token: process.env.BOT_TOKEN,
@@ -24,6 +24,7 @@ async function tg(method, payload) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
+
   const data = await res.json();
   if (!data.ok) console.error('TG API error:', method, data);
   return data;
@@ -99,6 +100,7 @@ async function fetchAllLeaderboardRows() {
 
 function buildTodayRows(rows) {
   const todayKey = todayHelsinkiKey();
+
   return rows
     .filter(row => row.updated_at && helsinkiDayKey(row.updated_at) === todayKey)
     .sort((a, b) => {
@@ -111,8 +113,9 @@ function buildTodayRows(rows) {
 
 function formatLeaderboardSection(title, rows, scoreField, emptyText) {
   let text = `${title}\n`;
+
   if (!rows.length) {
-    text += `${emptyText}`;
+    text += emptyText;
     return text;
   }
 
@@ -127,6 +130,7 @@ function formatLeaderboardSection(title, rows, scoreField, emptyText) {
 function getRankInfo(rows, userId) {
   const index = rows.findIndex(r => Number(r.telegram_user_id) === Number(userId));
   if (index === -1) return null;
+
   return {
     rank: index + 1,
     row: rows[index]
@@ -170,16 +174,50 @@ async function buildLeaderboardText(userId) {
   return text;
 }
 
+function buildMainKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: 'Play ladderslava', callback_game: {} }],
+      [{ text: '🏆 Рейтинг', callback_data: 'show_rating' }]
+    ]
+  };
+}
+
+function buildRatingKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: '🔄 Обновить', callback_data: 'refresh_rating' }],
+      [{ text: '🎮 Играть', callback_data: 'send_game_card' }]
+    ]
+  };
+}
+
 async function sendMainGameCard(chatId) {
   await tg('sendGame', {
     chat_id: chatId,
     game_short_name: process.env.GAME_SHORT_NAME,
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: 'Play ladderslava', callback_game: {} }],
-        [{ text: '🏆 Рейтинг', callback_data: 'show_rating' }]
-      ]
-    }
+    reply_markup: buildMainKeyboard()
+  });
+}
+
+async function sendRatingMessage(chatId, userId) {
+  const leaderboardText = await buildLeaderboardText(userId);
+
+  return await tg('sendMessage', {
+    chat_id: chatId,
+    text: leaderboardText,
+    reply_markup: buildRatingKeyboard()
+  });
+}
+
+async function editRatingMessage(chatId, messageId, userId) {
+  const leaderboardText = await buildLeaderboardText(userId);
+
+  return await tg('editMessageText', {
+    chat_id: chatId,
+    message_id: messageId,
+    text: leaderboardText,
+    reply_markup: buildRatingKeyboard()
   });
 }
 
@@ -192,6 +230,7 @@ export default async function handler(req, res) {
   try {
     const update = req.body || {};
 
+    // Текстовые сообщения
     if (update.message && typeof update.message.text === 'string') {
       const chatId = update.message.chat.id;
       const fromId = update.message.from?.id;
@@ -204,15 +243,12 @@ export default async function handler(req, res) {
       }
 
       if (cmd === 'rating' || text === '🏆 Рейтинг') {
-        const leaderboardText = await buildLeaderboardText(fromId);
-        await tg('sendMessage', {
-          chat_id: chatId,
-          text: leaderboardText
-        });
+        await sendRatingMessage(chatId, fromId);
         return res.status(200).json({ ok: true });
       }
     }
 
+    // Нажатие на игровую кнопку
     if (update.callback_query && update.callback_query.game_short_name) {
       const cq = update.callback_query;
       const userId = cq.from.id;
@@ -235,22 +271,46 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
+    // Показать рейтинг
     if (update.callback_query && update.callback_query.data === 'show_rating') {
       const cq = update.callback_query;
       const chatId = cq.message?.chat?.id;
       const userId = cq.from?.id;
 
-      const leaderboardText = await buildLeaderboardText(userId);
+      await tg('answerCallbackQuery', {
+        callback_query_id: cq.id
+      });
+
+      await sendRatingMessage(chatId, userId);
+      return res.status(200).json({ ok: true });
+    }
+
+    // Обновить рейтинг в том же сообщении
+    if (update.callback_query && update.callback_query.data === 'refresh_rating') {
+      const cq = update.callback_query;
+      const chatId = cq.message?.chat?.id;
+      const messageId = cq.message?.message_id;
+      const userId = cq.from?.id;
+
+      await tg('answerCallbackQuery', {
+        callback_query_id: cq.id,
+        text: 'Рейтинг обновлён'
+      });
+
+      await editRatingMessage(chatId, messageId, userId);
+      return res.status(200).json({ ok: true });
+    }
+
+    // Вернуть карточку игры
+    if (update.callback_query && update.callback_query.data === 'send_game_card') {
+      const cq = update.callback_query;
+      const chatId = cq.message?.chat?.id;
 
       await tg('answerCallbackQuery', {
         callback_query_id: cq.id
       });
 
-      await tg('sendMessage', {
-        chat_id: chatId,
-        text: leaderboardText
-      });
-
+      await sendMainGameCard(chatId);
       return res.status(200).json({ ok: true });
     }
 
