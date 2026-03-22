@@ -187,7 +187,7 @@ function buildRatingKeyboard() {
   return {
     inline_keyboard: [
       [{ text: '🔄 Обновить', callback_data: 'refresh_rating' }],
-      [{ text: '🎮 Играть', callback_data: 'send_game_card' }]
+      [{ text: '❌ Закрыть', callback_data: 'close_rating' }]
     ]
   };
 }
@@ -218,6 +218,13 @@ async function editRatingMessage(chatId, messageId, userId) {
     message_id: messageId,
     text: leaderboardText,
     reply_markup: buildRatingKeyboard()
+  });
+}
+
+async function deleteRatingMessage(chatId, messageId) {
+  return await tg('deleteMessage', {
+    chat_id: chatId,
+    message_id: messageId
   });
 }
 
@@ -301,16 +308,17 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    // Вернуть карточку игры
-    if (update.callback_query && update.callback_query.data === 'send_game_card') {
+    // Закрыть рейтинг
+    if (update.callback_query && update.callback_query.data === 'close_rating') {
       const cq = update.callback_query;
       const chatId = cq.message?.chat?.id;
+      const messageId = cq.message?.message_id;
 
       await tg('answerCallbackQuery', {
         callback_query_id: cq.id
       });
 
-      await sendMainGameCard(chatId);
+      await deleteRatingMessage(chatId, messageId);
       return res.status(200).json({ ok: true });
     }
 
