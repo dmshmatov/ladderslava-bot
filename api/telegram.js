@@ -1,4 +1,9 @@
-// api/telegram.js — Telegram webhook + карточка игры + рейтинг из Supabase + обновление сообщения рейтинга
+// api/telegram.js — Telegram webhook + карточка игры + рейтинг из Supabase
+// Версия:
+// - рейтинг открывается отдельным сообщением
+// - рейтинг обновляется одной кнопкой
+// - в рейтинге есть "Закрыть"
+// - у game message сразу очищается верхний встроенный текст (Top Players / score block)
 
 const TG = {
   token: process.env.BOT_TOKEN,
@@ -9,6 +14,8 @@ const SUPABASE = {
   url: process.env.SUPABASE_URL,
   key: process.env.SUPABASE_ANON_KEY
 };
+
+const INVISIBLE_TEXT = '\u2063'; // невидимый символ для очистки текста game message
 
 // ОБЯЗАТЕЛЬНО заданы переменные окружения:
 // BOT_TOKEN         — токен бота
@@ -26,29 +33,40 @@ async function tg(method, payload) {
   });
 
   const data = await res.json();
-  if (!data.ok) console.error('TG API error:', method, data);
+  if (!data.ok) {
+    console.error('TG API error:', method, data);
+  }
   return data;
 }
 
 function gameUrl(params = {}) {
   const base = process.env.GAME_URL_BASE;
   const apiBase = process.env.BOT_BASE;
+
   const q = new URLSearchParams({
     v: String(Date.now()),
     api: apiBase || '',
     ...params
   });
+
   return `${base}/index.html?${q.toString()}`;
 }
 
 function getCommand(text) {
-  const m = String(text || '').trim().match(/^\/([a-zA-Z0-9_]+)(?:@[\w_]+)?(?:\s+.*)?$/);
+  const m = String(text || '')
+    .trim()
+    .match(/^\/([a-zA-Z0-9_]+)(?:@[\w_]+)?(?:\s+.*)?$/);
+
   return m ? m[1].toLowerCase() : null;
 }
 
 function formatPlayerName(row) {
-  if (row.username && String(row.username).trim()) return '@' + String(row.username).trim();
-  if (row.first_name && String(row.first_name).trim()) return String(row.first_name).trim();
+  if (row.username && String(row.username).trim()) {
+    return '@' + String(row.username).trim();
+  }
+  if (row.first_name && String(row.first_name).trim()) {
+    return String(row.first_name).trim();
+  }
   return `Player ${row.telegram_user_id}`;
 }
 
@@ -192,12 +210,31 @@ function buildRatingKeyboard() {
   };
 }
 
+async function clearGameMessageText(chatId, messageId) {
+  const result = await tg('editMessageText', {
+    chat_id: chatId,
+    message_id: messageId,
+    text: INVISIBLE_TEXT,
+    reply_markup: buildMainKeyboard()
+  });
+
+  return result;
+}
+
 async function sendMainGameCard(chatId) {
-  await tg('sendGame', {
+  const sent = await tg('sendGame', {
     chat_id: chatId,
     game_short_name: process.env.GAME_SHORT_NAME,
     reply_markup: buildMainKeyboard()
   });
+
+  // Сразу очищаем верхний текст game message,
+  // чтобы не показывался встроенный Top Players / score block
+  if (sent?.ok && sent?.result?.message_id) {
+    await clearGameMessageText(chatId, sent.result.message_id);
+  }
+
+  return sent;
 }
 
 async function sendRatingMessage(chatId, userId) {
