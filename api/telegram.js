@@ -1,10 +1,10 @@
 // api/telegram.js — Telegram webhook + карточка игры + рейтинг из Supabase
 // Версия:
-// - перед игрой отправляется приветственное сообщение
+// - onboarding встроен прямо в game message
+// - отдельное приветственное сообщение больше не отправляется
 // - рейтинг открывается отдельным сообщением
 // - рейтинг обновляется одной кнопкой
 // - в рейтинге есть "Закрыть"
-// - у game message сразу очищается верхний встроенный текст Telegram
 
 const TG = {
   token: process.env.BOT_TOKEN,
@@ -15,8 +15,6 @@ const SUPABASE = {
   url: process.env.SUPABASE_URL,
   key: process.env.SUPABASE_ANON_KEY
 };
-
-const INVISIBLE_TEXT = '\u2063';
 
 // ОБЯЗАТЕЛЬНО заданы переменные окружения:
 // BOT_TOKEN         — токен бота
@@ -63,7 +61,7 @@ function getCommand(text) {
   return m ? m[1].toLowerCase() : null;
 }
 
-function buildWelcomeText() {
+function buildGameCardText() {
   return (
     `🔥 Ladders & Lava\n\n` +
     `Перепрыгивай между лестницами и избегай камней.\n\n` +
@@ -75,8 +73,7 @@ function buildWelcomeText() {
     `👇 Как пользоваться:\n` +
     `🎮 Играть — запускает игру\n` +
     `🏆 Рейтинг — показывает топ игроков\n\n` +
-    `🏆 Попробуй попасть в топ-3\n\n` +
-    `Готов? Поехали 👇`
+    `🏆 Попробуй попасть в топ-3`
   );
 }
 
@@ -235,18 +232,11 @@ function buildRatingKeyboard() {
   };
 }
 
-async function sendWelcomeMessage(chatId) {
-  return await tg('sendMessage', {
-    chat_id: chatId,
-    text: buildWelcomeText()
-  });
-}
-
-async function clearGameMessageText(chatId, messageId) {
+async function setGameMessageText(chatId, messageId) {
   return await tg('editMessageText', {
     chat_id: chatId,
     message_id: messageId,
-    text: INVISIBLE_TEXT,
+    text: buildGameCardText(),
     reply_markup: buildMainKeyboard()
   });
 }
@@ -259,7 +249,7 @@ async function sendMainGameCard(chatId) {
   });
 
   if (sent?.ok && sent?.result?.message_id) {
-    await clearGameMessageText(chatId, sent.result.message_id);
+    await setGameMessageText(chatId, sent.result.message_id);
   }
 
   return sent;
@@ -310,7 +300,6 @@ export default async function handler(req, res) {
       const cmd = getCommand(text);
 
       if (cmd === 'start' || cmd === 'play' || text === '🎮 Играть') {
-        await sendWelcomeMessage(chatId);
         await sendMainGameCard(chatId);
         return res.status(200).json({ ok: true });
       }
